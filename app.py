@@ -9,7 +9,8 @@ st.set_page_config(page_title="Deteksi Lateral Movement", layout="wide")
 
 REQUIRED_RAW_COLUMNS = ["timestamp", "event_id", "source_ip", "dest_ip"]
 RAW_COLUMN_ALIASES = {
-    "timestamp": ["timestamp", "time", "timegenerated", "datetime", "event_time"],
+    "timestamp": ["utctime", "systemtime", "timecreated", "timestamp", "time",
+                  "datetime", "eventtime", "event_time", "creationutctime"],
     "event_id": ["event_id", "eventid", "event id", "eventcode", "event_code"],
     "source_ip": ["source_ip", "src_ip", "sourceip", "source ip", "source_address"],
     "dest_ip": ["dest_ip", "dst_ip", "destination_ip", "destinationip", "dest ip", "target_ip"],
