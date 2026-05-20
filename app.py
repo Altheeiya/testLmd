@@ -26,33 +26,79 @@ def load_model():
 
 
 def normalize_input_columns(df):
-    normalized_lookup = {
-        str(column).strip().lower().replace(" ", "").replace("-", "_"): column
-        for column in df.columns
-    }
-    rename_map = {}
+    def _norm(s: str) -> str:
+        return str(s).strip().lower().replace(" ", "").replace("-", "_")
+
+    cols = list(df.columns)
+    col_norm = {col: _norm(col) for col in cols}
+
+    result = df.copy()
 
     for canonical_name, aliases in RAW_COLUMN_ALIASES.items():
-        for alias in aliases:
-            lookup_key = alias.strip().lower().replace(" ", "").replace("-", "_")
-            if lookup_key in normalized_lookup:
-                original_name = normalized_lookup[lookup_key]
-                if original_name != canonical_name:
-                    rename_map[original_name] = canonical_name
-                break
+        alias_norms = set(_norm(a) for a in aliases)
+        # find all columns that match any alias for this canonical
+        matched = [col for col, n in col_norm.items() if n in alias_norms]
+        if not matched:
+            continue
 
-    return df.rename(columns=rename_map)
+        # If canonical already exists, include it first so it takes precedence
+        cols_to_merge = []
+        if canonical_name in result.columns:
+            cols_to_merge.append(canonical_name)
+        # add other matched columns (excluding canonical if present)
+        cols_to_merge.extend([c for c in matched if c != canonical_name])
+
+        # Create canonical column as first non-null across matched columns
+        try:
+            result[canonical_name] = result[cols_to_merge].bfill(axis=1).iloc[:, 0]
+        except Exception:
+            # Fallback: if bfill fails (e.g., single column), just take first matched
+            result[canonical_name] = result[cols_to_merge[0]]
+
+        # Drop the original matched columns except the canonical
+        for c in matched:
+            if c != canonical_name and c in result.columns:
+                result.drop(columns=c, inplace=True)
+
+    # Ensure column names are unique now
+    result = result.loc[:, ~result.columns.duplicated()]
+    return result
 
 # 1. LOGIKA FULL PREPROCESSING
 def process_data(df):
     df = normalize_input_columns(df.copy())
 
     missing_columns = [column for column in REQUIRED_RAW_COLUMNS if column not in df.columns]
+
+    # Heuristik: coba deteksi kolom yang mirip jika ada (mis-named exports)
+    if 'timestamp' in missing_columns:
+        candidates = [c for c in df.columns if any(k in c.lower() for k in ['time', 'date', 'created', 'eventtime'])]
+        if candidates:
+            df['timestamp'] = df[candidates[0]]
+            missing_columns.remove('timestamp')
+
+    if 'source_ip' in missing_columns:
+        candidates = [c for c in df.columns if any(k in c.lower() for k in ['src', 'source', 'client', 'ip', 'address'])]
+        if candidates:
+            df['source_ip'] = df[candidates[0]]
+            missing_columns.remove('source_ip')
+
+    if 'dest_ip' in missing_columns:
+        candidates = [c for c in df.columns if any(k in c.lower() for k in ['dst', 'dest', 'destination', 'target', 'ip', 'address'])]
+        # prefer candidates that are not the same as source_ip
+        candidates = [c for c in candidates if c not in (['source_ip'] + list(df.columns)) or True]
+        if candidates:
+            df['dest_ip'] = df[candidates[0]]
+            missing_columns.remove('dest_ip')
+
     if missing_columns:
         raise ValueError(f"Kolom wajib belum ada di CSV: {', '.join(missing_columns)}")
 
     # A. Temporal Features
-    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    try:
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    except Exception as exc:
+        raise ValueError(f"Gagal mengurai kolom timestamp: {exc}. Kolom tersedia: {', '.join(df.columns)}")
     df['hour'] = df['timestamp'].dt.hour
     df['is_business_hours'] = ((df['hour'] >= 9) & (df['hour'] < 17)).astype(int)
     
