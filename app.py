@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
 import networkx as nx
 
 # Konfigurasi Halaman
@@ -10,6 +9,15 @@ st.set_page_config(page_title="Deteksi Lateral Movement", layout="wide")
 # Muat Model
 @st.cache_resource
 def load_model():
+    try:
+        import joblib
+    except ModuleNotFoundError as exc:
+        st.error(
+            "Dependency `joblib` belum terpasang di environment deployment. "
+            "Pastikan `requirements.txt` sudah dipakai saat deploy."
+        )
+        raise exc
+
     return joblib.load('best_model.pkl')
 
 # 1. LOGIKA FULL PREPROCESSING
@@ -41,8 +49,12 @@ def process_data(df):
 def main():
     st.title("Deteksi Lateral Movement")
     st.write("Upload log Sysmon (CSV) untuk memproses fitur secara otomatis dan mendeteksi anomali.")
-    
-    model = load_model()
+
+    try:
+        model = load_model()
+    except Exception:
+        st.stop()
+
     uploaded_file = st.file_uploader("Upload Log Sysmon (CSV)", type=['csv'])
     
     if uploaded_file:
