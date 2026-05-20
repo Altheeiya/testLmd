@@ -39,7 +39,7 @@ def process_data(df):
     return df[required_features]
 
 def main():
-    st.title("Full Process: Deteksi Lateral Movement")
+    st.title("Deteksi Lateral Movement")
     st.write("Upload log Sysmon (CSV) untuk memproses fitur secara otomatis dan mendeteksi anomali.")
     
     model = load_model()
