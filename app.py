@@ -2,11 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from io import BytesIO
 
 # Konfigurasi Halaman
 st.set_page_config(page_title="Deteksi Lateral Movement", layout="wide")
 
 REQUIRED_RAW_COLUMNS = ["timestamp", "event_id", "source_ip", "dest_ip"]
+CHUNK_SIZE = 50000
 
 # Muat Model
 @st.cache_resource
@@ -52,6 +54,40 @@ def process_data(df):
             
     return df[required_features]
 
+
+def read_preview(uploaded_file):
+    uploaded_file.seek(0)
+    preview_df = pd.read_csv(uploaded_file, usecols=lambda column: column in REQUIRED_RAW_COLUMNS, nrows=5)
+    uploaded_file.seek(0)
+    return preview_df
+
+
+def process_uploaded_file(uploaded_file):
+    uploaded_bytes = uploaded_file.getvalue()
+    csv_buffer = BytesIO(uploaded_bytes)
+    model = load_model()
+
+    processed_parts = []
+    raw_parts = []
+
+    for chunk in pd.read_csv(csv_buffer, usecols=lambda column: column in REQUIRED_RAW_COLUMNS, chunksize=CHUNK_SIZE):
+        missing_columns = [column for column in REQUIRED_RAW_COLUMNS if column not in chunk.columns]
+        if missing_columns:
+            raise ValueError(f"Kolom wajib belum ada di CSV: {', '.join(missing_columns)}")
+
+        processed_chunk = process_data(chunk.copy())
+        predictions = model.predict(processed_chunk)
+
+        chunk = chunk.copy()
+        chunk['Prediksi'] = ["Lateral Movement" if prediction == 1 else "Normal" for prediction in predictions]
+        processed_parts.append(chunk)
+        raw_parts.append(processed_chunk)
+
+    if not processed_parts:
+        raise ValueError("CSV kosong atau tidak dapat diproses.")
+
+    return pd.concat(processed_parts, ignore_index=True), pd.concat(raw_parts, ignore_index=True)
+
 def main():
     st.title("Deteksi Lateral Movement")
     st.write("Upload log Sysmon (CSV) untuk memproses fitur secara otomatis dan mendeteksi anomali.")
@@ -65,7 +101,7 @@ def main():
             st.stop()
 
         try:
-            raw_df = pd.read_csv(uploaded_file, usecols=lambda column: column in REQUIRED_RAW_COLUMNS)
+            raw_df = read_preview(uploaded_file)
         except ValueError:
             st.error("CSV harus memiliki kolom: timestamp, event_id, source_ip, dan dest_ip.")
             st.stop()
@@ -78,23 +114,17 @@ def main():
         st.write("Data Mentah (Preview):", raw_df.head())
         
         if st.button("Jalankan Full Process"):
-            with st.spinner("Sedang memproses fitur..."):
-                processed_df = process_data(raw_df)
-                st.write("Fitur hasil proses (Input Model):", processed_df.head())
-            
-            with st.spinner("Melakukan prediksi..."):
-                try:
-                    model = load_model()
-                except Exception:
-                    st.error("Model gagal dimuat. Periksa file `best_model.pkl` dan dependency di deployment.")
-                    st.stop()
+            try:
+                with st.spinner("Sedang memproses file besar per bagian..."):
+                    result_df, processed_df = process_uploaded_file(uploaded_file)
 
-                preds = model.predict(processed_df)
-                raw_df['Prediksi'] = ["Lateral Movement" if p == 1 else "Normal" for p in preds]
-                
+                st.write("Fitur hasil proses (Input Model):", processed_df.head())
                 st.subheader("Hasil Akhir")
-                st.dataframe(raw_df)
-                st.download_button("Download Hasil", raw_df.to_csv().encode('utf-8'), "hasil.csv")
+                st.dataframe(result_df)
+                st.download_button("Download Hasil", result_df.to_csv(index=False).encode('utf-8'), "hasil.csv")
+            except Exception as exc:
+                st.error("Terjadi kesalahan saat memproses file besar.")
+                st.exception(exc)
 
 if __name__ == '__main__':
     main()
