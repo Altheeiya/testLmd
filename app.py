@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import json
 from pathlib import Path
 
 # Konfigurasi Halaman
@@ -17,6 +18,14 @@ RAW_COLUMN_ALIASES = {
 }
 CHUNK_SIZE = 50000
 MAX_UPLOAD_SIZE = 150 * 1024 * 1024  # 150 MB
+
+# Load expected feature names used by the model
+FEATURE_NAMES_PATH = Path(__file__).resolve().parent / 'feature_names.json'
+if FEATURE_NAMES_PATH.exists():
+    with open(FEATURE_NAMES_PATH, 'r', encoding='utf-8') as fh:
+        EXPECTED_FEATURES = json.load(fh)
+else:
+    EXPECTED_FEATURES = None
 
 # Muat Model
 @st.cache_resource
@@ -116,13 +125,22 @@ def process_data(df):
     ).astype(int)
     
     # Mengisi kolom yang kosong agar sesuai dengan model training
-    # (Pastikan fitur ini sesuai dengan yang ada di best_model)
-    required_features = ['hour', 'is_business_hours', 'is_logon', 'is_failed_logon', 'is_process_create', 'degree_centrality']
-    for feat in required_features:
+    base_features = ['hour', 'is_business_hours', 'is_logon', 'is_failed_logon', 'is_process_create', 'degree_centrality']
+    for feat in base_features:
         if feat not in df.columns:
             df[feat] = 0
-            
-    return df[required_features]
+
+    # If we have a feature_names.json, ensure final DF matches that ordering and fills missing features with 0
+    if EXPECTED_FEATURES:
+        for feat in EXPECTED_FEATURES:
+            if feat not in df.columns:
+                df[feat] = 0
+            # coerce to numeric, fill NaN with 0
+            df[feat] = pd.to_numeric(df[feat], errors='coerce').fillna(0).astype(float)
+        return df[EXPECTED_FEATURES]
+
+    # Fallback: return base features if no feature list provided
+    return df[base_features]
 
 
 def read_preview(uploaded_file):
