@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import networkx as nx
 from pathlib import Path
 
 # Konfigurasi Halaman
 st.set_page_config(page_title="Deteksi Lateral Movement", layout="wide")
+
+REQUIRED_RAW_COLUMNS = ["timestamp", "event_id", "source_ip", "dest_ip"]
 
 # Muat Model
 @st.cache_resource
@@ -34,10 +35,13 @@ def process_data(df):
     for eid, name in event_mapping.items():
         df[name] = (df['event_id'] == eid).astype(int)
     
-    # C. Simple Graph Features (Metrik derajat node saja untuk efisiensi)
-    G = nx.from_pandas_edgelist(df, 'source_ip', 'dest_ip')
-    degree_dict = dict(G.degree())
-    df['degree_centrality'] = df['source_ip'].map(degree_dict).fillna(0)
+    # C. Simple Graph Features (vectorized agar lebih ringan untuk file besar)
+    source_counts = df['source_ip'].value_counts(dropna=False)
+    dest_counts = df['dest_ip'].value_counts(dropna=False)
+    df['degree_centrality'] = (
+        df['source_ip'].map(source_counts).fillna(0)
+        + df['dest_ip'].map(dest_counts).fillna(0)
+    ).astype(int)
     
     # Mengisi kolom yang kosong agar sesuai dengan model training
     # (Pastikan fitur ini sesuai dengan yang ada di best_model)
@@ -51,11 +55,26 @@ def process_data(df):
 def main():
     st.title("Deteksi Lateral Movement")
     st.write("Upload log Sysmon (CSV) untuk memproses fitur secara otomatis dan mendeteksi anomali.")
+    st.caption("Aplikasi ini hanya memproses kolom yang diperlukan: timestamp, event_id, source_ip, dan dest_ip.")
 
     uploaded_file = st.file_uploader("Upload Log Sysmon (CSV)", type=['csv'])
     
     if uploaded_file:
-        raw_df = pd.read_csv(uploaded_file)
+        if uploaded_file.size and uploaded_file.size > 150 * 1024 * 1024:
+            st.error("File terlalu besar untuk diproses di Streamlit Cloud. Pecah CSV menjadi beberapa bagian yang lebih kecil dari 150 MB.")
+            st.stop()
+
+        try:
+            raw_df = pd.read_csv(uploaded_file, usecols=lambda column: column in REQUIRED_RAW_COLUMNS)
+        except ValueError:
+            st.error("CSV harus memiliki kolom: timestamp, event_id, source_ip, dan dest_ip.")
+            st.stop()
+
+        missing_columns = [column for column in REQUIRED_RAW_COLUMNS if column not in raw_df.columns]
+        if missing_columns:
+            st.error(f"Kolom wajib belum ada di CSV: {', '.join(missing_columns)}")
+            st.stop()
+
         st.write("Data Mentah (Preview):", raw_df.head())
         
         if st.button("Jalankan Full Process"):
