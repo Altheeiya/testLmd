@@ -35,6 +35,26 @@ if LABEL_MAPPING_PATH.exists():
 else:
     LABEL_MAP = None
 
+# Derive a human-readable label map: if LABEL_MAP values are just numeric/identity,
+# convert to Normal (0) / Lateral Movement (non-zero). Otherwise use LABEL_MAP as-is.
+HUMAN_LABEL_MAP = None
+if LABEL_MAP:
+    try:
+        values_are_numeric = all(str(v).strip().isdigit() for v in LABEL_MAP.values())
+        keys_equal_values = all(str(k) == str(v) for k, v in LABEL_MAP.items())
+    except Exception:
+        values_are_numeric = False
+        keys_equal_values = False
+
+    if values_are_numeric or keys_equal_values:
+        HUMAN_LABEL_MAP = {str(k): ('Normal' if str(k) in ('0', '0.0') else 'Lateral Movement') for k in LABEL_MAP.keys()}
+    else:
+        # assume LABEL_MAP already maps to human-readable labels
+        HUMAN_LABEL_MAP = {str(k): str(v) for k, v in LABEL_MAP.items()}
+
+else:
+    HUMAN_LABEL_MAP = None
+
 # Muat Model
 @st.cache_resource
 def load_model():
@@ -220,9 +240,9 @@ def main():
                 st.write("Fitur hasil proses (Input Model):", processed_df.head())
 
                 # Map raw predictions to human labels using label_map if available
-                if LABEL_MAP:
-                    # LABEL_MAP keys are strings; convert prediction to str to map
-                    result_df['Prediksi'] = result_df['Prediksi_raw'].astype(str).map(lambda x: LABEL_MAP.get(x, x))
+                if HUMAN_LABEL_MAP:
+                    # Map raw numeric predictions to human-readable labels
+                    result_df['Prediksi'] = result_df['Prediksi_raw'].astype(str).map(lambda x: HUMAN_LABEL_MAP.get(x, f"Class_{x}"))
                 else:
                     result_df['Prediksi'] = result_df['Prediksi_raw'].apply(lambda p: f"Class_{p}")
 
