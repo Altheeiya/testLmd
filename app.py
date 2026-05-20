@@ -27,6 +27,14 @@ if FEATURE_NAMES_PATH.exists():
 else:
     EXPECTED_FEATURES = None
 
+# Load label mapping if present
+LABEL_MAPPING_PATH = Path(__file__).resolve().parent / 'label_mapping.json'
+if LABEL_MAPPING_PATH.exists():
+    with open(LABEL_MAPPING_PATH, 'r', encoding='utf-8') as fh:
+        LABEL_MAP = json.load(fh)
+else:
+    LABEL_MAP = None
+
 # Muat Model
 @st.cache_resource
 def load_model():
@@ -164,7 +172,8 @@ def process_uploaded_file(uploaded_file):
         predictions = model.predict(processed_chunk)
 
         output_chunk = normalized_chunk.copy()
-        output_chunk['Prediksi'] = ["Lateral Movement" if pred == 1 else "Normal" for pred in predictions]
+        # store raw numeric prediction for later mapping/triage
+        output_chunk['Prediksi_raw'] = predictions
 
         result_parts.append(output_chunk)
         feature_parts.append(processed_chunk)
@@ -210,11 +219,38 @@ def main():
 
                 st.write("Fitur hasil proses (Input Model):", processed_df.head())
 
-                # quick filter for lateral movements
-                show_only_lateral = st.checkbox("Tampilkan hanya Lateral Movement")
-                display_df = result_df
-                if show_only_lateral:
-                    display_df = result_df[result_df['Prediksi'] == 'Lateral Movement']
+                # Map raw predictions to human labels using label_map if available
+                if LABEL_MAP:
+                    # LABEL_MAP keys are strings; convert prediction to str to map
+                    result_df['Prediksi'] = result_df['Prediksi_raw'].astype(str).map(lambda x: LABEL_MAP.get(x, x))
+                else:
+                    result_df['Prediksi'] = result_df['Prediksi_raw'].apply(lambda p: f"Class_{p}")
+
+                # Let user choose which raw class values should be considered "Lateral Movement"
+                unique_raw = sorted(result_df['Prediksi_raw'].unique().tolist())
+                default_anom = [int(c) for c in unique_raw if int(c) != 0]
+                selected_anom = st.multiselect("Pilih kelas yang dianggap Lateral Movement (raw)", options=unique_raw, default=[str(x) for x in default_anom])
+
+                display_df = result_df.copy()
+                if selected_anom:
+                    # selected_anom are strings from multiselect; ensure types
+                    selected_set = set(int(x) for x in selected_anom)
+                    display_df = display_df[display_df['Prediksi_raw'].isin(selected_set)]
+
+                # Totals summary
+                total_rows = len(result_df)
+                # count anomalies according to selected raw classes
+                if selected_anom:
+                    anomaly_count = int(result_df['Prediksi_raw'].isin(selected_set).sum())
+                else:
+                    # default: any non-zero raw label
+                    anomaly_count = int((result_df['Prediksi_raw'] != 0).sum())
+                normal_count = total_rows - anomaly_count
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Baris", f"{total_rows}")
+                c2.metric("Lateral Movement (dipilih)", f"{anomaly_count}")
+                c3.metric("Normal", f"{normal_count}")
 
                 st.subheader("Hasil Akhir")
                 st.dataframe(display_df)
