@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import joblib
 import json
 from pathlib import Path
@@ -185,7 +184,6 @@ def process_uploaded_file(uploaded_file):
     feature_parts = []
 
     uploaded_file.seek(0)
-    chunk_index = 0
     for chunk in pd.read_csv(uploaded_file, chunksize=CHUNK_SIZE):
         normalized_chunk = normalize_input_columns(chunk)
         processed_chunk = process_data(normalized_chunk)
@@ -197,7 +195,6 @@ def process_uploaded_file(uploaded_file):
 
         result_parts.append(output_chunk)
         feature_parts.append(processed_chunk)
-        chunk_index += 1
 
     if not result_parts:
         raise ValueError("CSV kosong atau tidak dapat diproses.")
@@ -246,10 +243,13 @@ def main():
                 else:
                     result_df['Prediksi'] = result_df['Prediksi_raw'].apply(lambda p: f"Class_{p}")
 
-                # Let user choose which raw class values should be considered "Lateral Movement"
-                unique_raw = sorted(result_df['Prediksi_raw'].unique().tolist())
-                default_anom = [int(c) for c in unique_raw if int(c) != 0]
-                selected_anom = st.multiselect("Pilih kelas yang dianggap Lateral Movement (raw)", options=unique_raw, default=[str(x) for x in default_anom])
+                # Advanced: manual selector hidden by default to avoid confusion
+                selected_anom = None
+                show_manual = st.checkbox("Advanced: Manual anomaly selector (tampilkan pilihan kelas mentah)", value=False)
+                if show_manual:
+                    unique_raw = sorted(result_df['Prediksi_raw'].astype(str).unique().tolist())
+                    default_anom = [str(x) for x in unique_raw if int(float(x)) != 0]
+                    selected_anom = st.multiselect("Pilih kelas yang dianggap Lateral Movement (raw)", options=unique_raw, default=default_anom)
 
                 display_df = result_df.copy()
                 if selected_anom:
@@ -281,6 +281,25 @@ def main():
                 if not lateral_counts.empty:
                     st.subheader('Ringkasan IP Sumber (Top 10)')
                     st.table(lateral_counts.head(10).rename_axis('source_ip').reset_index(name='count'))
+
+                # Diagnostics for debugging model/input issues
+                with st.expander("Diagnostics (developer)"):
+                    model_info = load_model()
+                    st.write("Model classes:", getattr(model_info, 'classes_', None))
+                    st.write("Model n_features_in_:", getattr(model_info, 'n_features_in_', None))
+                    st.write("Prediksi_raw value counts:")
+                    st.write(result_df['Prediksi_raw'].value_counts())
+                    st.write("Sample processed features (first 5 rows):")
+                    st.dataframe(processed_df.head())
+                    # show which features are entirely zero (possible preprocessing bug)
+                    try:
+                        zero_feats = (processed_df.sum(axis=0) == 0)
+                        if zero_feats.any():
+                            st.write("Fitur dengan jumlah 0 sepanjang dataset:", zero_feats[zero_feats].index.tolist())
+                        else:
+                            st.write("Tidak ada fitur yang semuanya nol.")
+                    except Exception as e:
+                        st.write("Gagal menghitung ringkasan fitur:", e)
 
             except Exception as exc:
                 st.error("Terjadi kesalahan saat memproses file besar.")
