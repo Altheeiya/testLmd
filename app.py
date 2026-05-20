@@ -16,6 +16,7 @@ RAW_COLUMN_ALIASES = {
     "dest_ip": ["dest_ip", "dst_ip", "destination_ip", "destinationip", "dest ip", "target_ip"],
 }
 CHUNK_SIZE = 50000
+MAX_UPLOAD_SIZE = 150 * 1024 * 1024  # 150 MB
 
 # Muat Model
 @st.cache_resource
@@ -92,6 +93,7 @@ def process_uploaded_file(uploaded_file):
     feature_parts = []
 
     uploaded_file.seek(0)
+    chunk_index = 0
     for chunk in pd.read_csv(uploaded_file, chunksize=CHUNK_SIZE):
         normalized_chunk = normalize_input_columns(chunk)
         processed_chunk = process_data(normalized_chunk)
@@ -102,6 +104,7 @@ def process_uploaded_file(uploaded_file):
 
         result_parts.append(output_chunk)
         feature_parts.append(processed_chunk)
+        chunk_index += 1
 
     if not result_parts:
         raise ValueError("CSV kosong atau tidak dapat diproses.")
@@ -117,7 +120,7 @@ def main():
     uploaded_file = st.file_uploader("Upload Log Sysmon (CSV)", type=['csv'])
     
     if uploaded_file:
-        if uploaded_file.size and uploaded_file.size > 150 * 1024 * 1024:
+        if uploaded_file.size and uploaded_file.size > MAX_UPLOAD_SIZE:
             st.error("File terlalu besar untuk Streamlit Cloud. Pecah CSV menjadi beberapa bagian yang lebih kecil dari 150 MB.")
             st.stop()
 
@@ -132,15 +135,33 @@ def main():
         
         if st.button("Jalankan Full Process"):
             try:
+                progress = st.progress(0)
                 with st.spinner("Sedang memproses file per bagian..."):
                     uploaded_file.seek(0)
                     result_df, processed_df = process_uploaded_file(uploaded_file)
 
+                # persist results in session state
+                st.session_state['result_df'] = result_df
+                st.session_state['processed_df'] = processed_df
+
                 st.write("Fitur hasil proses (Input Model):", processed_df.head())
 
+                # quick filter for lateral movements
+                show_only_lateral = st.checkbox("Tampilkan hanya Lateral Movement")
+                display_df = result_df
+                if show_only_lateral:
+                    display_df = result_df[result_df['Prediksi'] == 'Lateral Movement']
+
                 st.subheader("Hasil Akhir")
-                st.dataframe(result_df)
-                st.download_button("Download Hasil", result_df.to_csv(index=False).encode('utf-8'), "hasil.csv")
+                st.dataframe(display_df)
+                st.download_button("Download Hasil", display_df.to_csv(index=False).encode('utf-8'), "hasil.csv")
+
+                # IP summary for triage
+                lateral_counts = result_df[result_df['Prediksi'] == 'Lateral Movement']['source_ip'].value_counts()
+                if not lateral_counts.empty:
+                    st.subheader('Ringkasan IP Sumber (Top 10)')
+                    st.table(lateral_counts.head(10).rename_axis('source_ip').reset_index(name='count'))
+
             except Exception as exc:
                 st.error("Terjadi kesalahan saat memproses file besar.")
                 st.exception(exc)
