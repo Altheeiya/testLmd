@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import networkx as nx
+from pathlib import Path
 
 # Konfigurasi Halaman
 st.set_page_config(page_title="Deteksi Lateral Movement", layout="wide")
@@ -18,7 +19,8 @@ def load_model():
         )
         raise exc
 
-    return joblib.load('best_model.pkl')
+    model_path = Path(__file__).resolve().parent / 'best_model.pkl'
+    return joblib.load(model_path)
 
 # 1. LOGIKA FULL PREPROCESSING
 def process_data(df):
@@ -50,11 +52,6 @@ def main():
     st.title("Deteksi Lateral Movement")
     st.write("Upload log Sysmon (CSV) untuk memproses fitur secara otomatis dan mendeteksi anomali.")
 
-    try:
-        model = load_model()
-    except Exception:
-        st.stop()
-
     uploaded_file = st.file_uploader("Upload Log Sysmon (CSV)", type=['csv'])
     
     if uploaded_file:
@@ -67,6 +64,12 @@ def main():
                 st.write("Fitur hasil proses (Input Model):", processed_df.head())
             
             with st.spinner("Melakukan prediksi..."):
+                try:
+                    model = load_model()
+                except Exception:
+                    st.error("Model gagal dimuat. Periksa file `best_model.pkl` dan dependency di deployment.")
+                    st.stop()
+
                 preds = model.predict(processed_df)
                 raw_df['Prediksi'] = ["Lateral Movement" if p == 1 else "Normal" for p in preds]
                 
