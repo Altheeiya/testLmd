@@ -2,18 +2,53 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-import networkx as nx
+from pathlib import Path
 
 # Konfigurasi Halaman
 st.set_page_config(page_title="Deteksi Lateral Movement", layout="wide")
 
+REQUIRED_RAW_COLUMNS = ["timestamp", "event_id", "source_ip", "dest_ip"]
+RAW_COLUMN_ALIASES = {
+    "timestamp": ["timestamp", "time", "timegenerated", "datetime", "event_time"],
+    "event_id": ["event_id", "eventid", "event id", "eventcode", "event_code"],
+    "source_ip": ["source_ip", "src_ip", "sourceip", "source ip", "source_address"],
+    "dest_ip": ["dest_ip", "dst_ip", "destination_ip", "destinationip", "dest ip", "target_ip"],
+}
+CHUNK_SIZE = 50000
+
 # Muat Model
 @st.cache_resource
 def load_model():
-    return joblib.load('best_model.pkl')
+    model_path = Path(__file__).resolve().parent / 'best_model.pkl'
+    return joblib.load(model_path)
+
+
+def normalize_input_columns(df):
+    normalized_lookup = {
+        str(column).strip().lower().replace(" ", "").replace("-", "_"): column
+        for column in df.columns
+    }
+    rename_map = {}
+
+    for canonical_name, aliases in RAW_COLUMN_ALIASES.items():
+        for alias in aliases:
+            lookup_key = alias.strip().lower().replace(" ", "").replace("-", "_")
+            if lookup_key in normalized_lookup:
+                original_name = normalized_lookup[lookup_key]
+                if original_name != canonical_name:
+                    rename_map[original_name] = canonical_name
+                break
+
+    return df.rename(columns=rename_map)
 
 # 1. LOGIKA FULL PREPROCESSING
 def process_data(df):
+    df = normalize_input_columns(df.copy())
+
+    missing_columns = [column for column in REQUIRED_RAW_COLUMNS if column not in df.columns]
+    if missing_columns:
+        raise ValueError(f"Kolom wajib belum ada di CSV: {', '.join(missing_columns)}")
+
     # A. Temporal Features
     df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
     df['hour'] = df['timestamp'].dt.hour
@@ -24,10 +59,13 @@ def process_data(df):
     for eid, name in event_mapping.items():
         df[name] = (df['event_id'] == eid).astype(int)
     
-    # C. Simple Graph Features (Metrik derajat node saja untuk efisiensi)
-    G = nx.from_pandas_edgelist(df, 'source_ip', 'dest_ip')
-    degree_dict = dict(G.degree())
-    df['degree_centrality'] = df['source_ip'].map(degree_dict).fillna(0)
+    # C. Simple Graph Features (lebih ringan untuk file besar)
+    source_counts = df['source_ip'].value_counts(dropna=False)
+    dest_counts = df['dest_ip'].value_counts(dropna=False)
+    df['degree_centrality'] = (
+        df['source_ip'].map(source_counts).fillna(0)
+        + df['dest_ip'].map(dest_counts).fillna(0)
+    ).astype(int)
     
     # Mengisi kolom yang kosong agar sesuai dengan model training
     # (Pastikan fitur ini sesuai dengan yang ada di best_model)
@@ -38,29 +76,73 @@ def process_data(df):
             
     return df[required_features]
 
+
+def read_preview(uploaded_file):
+    uploaded_file.seek(0)
+    preview_df = pd.read_csv(uploaded_file, nrows=5)
+    uploaded_file.seek(0)
+    return normalize_input_columns(preview_df)
+
+
+def process_uploaded_file(uploaded_file):
+    model = load_model()
+
+    result_parts = []
+    feature_parts = []
+
+    uploaded_file.seek(0)
+    for chunk in pd.read_csv(uploaded_file, chunksize=CHUNK_SIZE):
+        normalized_chunk = normalize_input_columns(chunk)
+        processed_chunk = process_data(normalized_chunk)
+        predictions = model.predict(processed_chunk)
+
+        output_chunk = normalized_chunk.copy()
+        output_chunk['Prediksi'] = ["Lateral Movement" if pred == 1 else "Normal" for pred in predictions]
+
+        result_parts.append(output_chunk)
+        feature_parts.append(processed_chunk)
+
+    if not result_parts:
+        raise ValueError("CSV kosong atau tidak dapat diproses.")
+
+    return pd.concat(result_parts, ignore_index=True), pd.concat(feature_parts, ignore_index=True)
+
 def main():
     st.title("Full Process: Deteksi Lateral Movement")
     st.write("Upload log Sysmon (CSV) untuk memproses fitur secara otomatis dan mendeteksi anomali.")
-    
-    model = load_model()
+
+    st.caption("Untuk file besar, aplikasi memproses data per-bagian dan hanya membutuhkan kolom yang bisa dipetakan ke timestamp, event_id, source_ip, dan dest_ip.")
+
     uploaded_file = st.file_uploader("Upload Log Sysmon (CSV)", type=['csv'])
     
     if uploaded_file:
-        raw_df = pd.read_csv(uploaded_file)
+        if uploaded_file.size and uploaded_file.size > 150 * 1024 * 1024:
+            st.error("File terlalu besar untuk Streamlit Cloud. Pecah CSV menjadi beberapa bagian yang lebih kecil dari 150 MB.")
+            st.stop()
+
+        try:
+            raw_df = read_preview(uploaded_file)
+        except Exception as exc:
+            st.error("CSV tidak bisa dibaca.")
+            st.exception(exc)
+            st.stop()
+
         st.write("Data Mentah (Preview):", raw_df.head())
         
         if st.button("Jalankan Full Process"):
-            with st.spinner("Sedang memproses fitur..."):
-                processed_df = process_data(raw_df)
+            try:
+                with st.spinner("Sedang memproses file per bagian..."):
+                    uploaded_file.seek(0)
+                    result_df, processed_df = process_uploaded_file(uploaded_file)
+
                 st.write("Fitur hasil proses (Input Model):", processed_df.head())
-            
-            with st.spinner("Melakukan prediksi..."):
-                preds = model.predict(processed_df)
-                raw_df['Prediksi'] = ["Lateral Movement" if p == 1 else "Normal" for p in preds]
-                
+
                 st.subheader("Hasil Akhir")
-                st.dataframe(raw_df)
-                st.download_button("Download Hasil", raw_df.to_csv().encode('utf-8'), "hasil.csv")
+                st.dataframe(result_df)
+                st.download_button("Download Hasil", result_df.to_csv(index=False).encode('utf-8'), "hasil.csv")
+            except Exception as exc:
+                st.error("Terjadi kesalahan saat memproses file besar.")
+                st.exception(exc)
 
 if __name__ == '__main__':
     main()
